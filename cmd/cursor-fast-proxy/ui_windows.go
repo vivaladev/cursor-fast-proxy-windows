@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -12,41 +13,41 @@ import (
 )
 
 const (
-	wsCaption      = 0x00C00000
-	wsSysMenu      = 0x00080000
-	wsMinimizeBox  = 0x00020000
-	wsVisible      = 0x10000000
-	wsChild        = 0x40000000
-	wsTabStop      = 0x00010000
-	wsVScroll      = 0x00200000
-	esAutohscroll  = 0x0080
-	esPassword     = 0x0020
-	esMultiline    = 0x0004
-	esReadonly     = 0x0800
-	esAutovscroll  = 0x0040
-	wmDestroy      = 0x0002
-	wmClose        = 0x0010
-	wmCommand      = 0x0111
-	wmSetFont      = 0x0030
-	emSetLimitText = 0x00C5
-	swShow         = 5
-	swHide         = 0
-	wmStatus       = 0x8000 + 1
-
-	idApply    = 101
-	idRemove   = 102
-	idSettings = 103
-	idLogs     = 104
-	idSave     = 105
-	idBack     = 106
-	idYes      = 107
-	idYesVPS   = 108
-	idIP       = 201
-	idUser     = 202
-	idPass     = 203
-	idStatus   = 301
-	idLogBox   = 302
-	idHint     = 303
+	wsCaption       = 0x00C00000
+	wsSysMenu       = 0x00080000
+	wsMinimizeBox   = 0x00020000
+	wsClipChildren  = 0x02000000
+	wsClipSiblings  = 0x04000000
+	wsVisible       = 0x10000000
+	wsChild         = 0x40000000
+	wsTabStop       = 0x00010000
+	wsVScroll       = 0x00200000
+	wsExClientEdge  = 0x00000200
+	ssNotify        = 0x0100
+	esAutohscroll   = 0x0080
+	esPassword      = 0x0020
+	esMultiline     = 0x0004
+	esReadonly      = 0x0800
+	esAutovscroll   = 0x0040
+	wmDestroy       = 0x0002
+	wmClose         = 0x0010
+	wmSetFont       = 0x0030
+	wmLButtonDown   = 0x0201
+	wmLButtonUp     = 0x0202
+	wmChar          = 0x0102
+	wmCommand       = 0x0111
+	emSetSel        = 0x00B1
+	emCharFromPos   = 0x00D7
+	emSetPassword   = 0x00CC
+	emSetLimitText  = 0x00C5
+	swShow          = 5
+	swpNoSize       = 0x0001
+	swpNoMove       = 0x0002
+	swpNoActivate   = 0x0010
+	swpFrameChanged = 0x0020
+	swpShowWindow   = 0x0040
+	swpHideWindow   = 0x0080
+	wmStatus        = 0x8000 + 1
 )
 
 var (
@@ -58,23 +59,31 @@ var (
 	procCreateWindowExW    = user32.NewProc("CreateWindowExW")
 	procDefWindowProcW     = user32.NewProc("DefWindowProcW")
 	procGetMessageW        = user32.NewProc("GetMessageW")
+	procPeekMessageW       = user32.NewProc("PeekMessageW")
 	procTranslateMessage   = user32.NewProc("TranslateMessage")
 	procDispatchMessageW   = user32.NewProc("DispatchMessageW")
+	procIsDialogMessageW   = user32.NewProc("IsDialogMessageW")
 	procPostQuitMessage    = user32.NewProc("PostQuitMessage")
 	procShowWindow         = user32.NewProc("ShowWindow")
+	procSetWindowPos       = user32.NewProc("SetWindowPos")
 	procSendMessageW       = user32.NewProc("SendMessageW")
 	procPostMessageW       = user32.NewProc("PostMessageW")
 	procSetWindowTextW     = user32.NewProc("SetWindowTextW")
 	procGetWindowTextW     = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLenW  = user32.NewProc("GetWindowTextLengthW")
-	procMessageBoxW        = user32.NewProc("MessageBoxW")
 	procLoadCursorW        = user32.NewProc("LoadCursorW")
 	procSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
 	procEnableWindow       = user32.NewProc("EnableWindow")
+	procSetFocus           = user32.NewProc("SetFocus")
+	procGetFocus           = user32.NewProc("GetFocus")
+	procSetWindowLongPtrW  = user32.NewProc("SetWindowLongPtrW")
+	procCallWindowProcW    = user32.NewProc("CallWindowProcW")
 	procGetModuleHandleW   = kernel32.NewProc("GetModuleHandleW")
 	procCreateFontW        = gdi32.NewProc("CreateFontW")
 
 	windowCallback = windows.NewCallback(windowProc)
+	inputCallback  = windows.NewCallback(inputProc)
+	origInputProc  uintptr
 	state          *desk
 	statusMu       sync.Mutex
 	pendingStatus  string
@@ -109,22 +118,36 @@ type message struct {
 }
 
 type desk struct {
-	engine  *workflow.Engine
-	hwnd    uintptr
-	font    uintptr
-	status  uintptr
-	hint    uintptr
-	logBox  uintptr
-	buttons []uintptr
-	main    []uintptr
-	fields  []uintptr
-	confirm []uintptr
-	back    uintptr
-	screen  string
+	engine      *workflow.Engine
+	hwnd        uintptr
+	font        uintptr
+	status      uintptr
+	hint        uintptr
+	logBox      uintptr
+	byID        map[int]uintptr
+	interactive []uintptr
+	screen      string
 }
 
 func runWindow(engine *workflow.Engine) error {
-	procSetProcessDPIAware.Call()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if _, err := openDesk(engine); err != nil {
+		return err
+	}
+	var msg message
+	for {
+		ret, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+		if int32(ret) <= 0 {
+			break
+		}
+		dispatch(&msg)
+	}
+	return nil
+}
+
+func openDesk(engine *workflow.Engine) (*desk, error) {
+	enableDPI()
 	instance, _, _ := procGetModuleHandleW.Call(0)
 	cursor, _, _ := procLoadCursorW.Call(0, 32512)
 	className := utf16("CursorFastProxyWindow")
@@ -137,83 +160,119 @@ func runWindow(engine *workflow.Engine) error {
 		LpszClassName: className,
 	}
 	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&class))); atom == 0 {
-		return fmt.Errorf("окно: %v", err)
+		runtime.KeepAlive(className)
+		return nil, fmt.Errorf("окно: %v", err)
 	}
 	title := utf16(windowTitle())
-	state = &desk{engine: engine, screen: "main"}
+	state = &desk{engine: engine, screen: "main", byID: map[int]uintptr{}}
 	hwnd, _, err := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
-		wsCaption|wsSysMenu|wsMinimizeBox,
-		120, 80, 480, 640,
+		wsCaption|wsSysMenu|wsMinimizeBox|wsClipChildren,
+		120, 80, 480, 680,
 		0, 0, instance, 0,
 	)
+	runtime.KeepAlive(className)
+	runtime.KeepAlive(title)
 	if hwnd == 0 {
-		return fmt.Errorf("окно не создалось: %v", err)
+		return nil, fmt.Errorf("окно не создалось: %v", err)
 	}
 	state.hwnd = hwnd
-	state.font = makeFont("Segoe UI", -18)
+	state.font = makeFont("Segoe UI", -uiFontPx)
 	state.build(instance)
+	// The first ShowWindow in the process can be replaced by STARTUPINFO.
+	// The second call is the one that actually shows the window.
+	procShowWindow.Call(hwnd, swShow)
+	procShowWindow.Call(hwnd, 1)
 	state.show("main")
 	setText(state.status, "Впиши ip, user и password, сохрани и нажми «Вжух и прокси».")
-	procShowWindow.Call(hwnd, swShow)
-	var msg message
-	for {
-		ret, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if int32(ret) <= 0 {
-			break
+	return state, nil
+}
+
+func enableDPI() {
+	proc := user32.NewProc("SetProcessDpiAwarenessContext")
+	if err := proc.Find(); err == nil {
+		// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+		if r, _, _ := proc.Call(^uintptr(3)); r != 0 {
+			return
 		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
-		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
 	}
-	return nil
+	procSetProcessDPIAware.Call()
 }
 
 func (d *desk) build(instance uintptr) {
-	d.hint = d.child("STATIC", "Cursor ходит в облако через 127.0.0.1:18081. Остальной трафик Windows не трогается.", 0, 16, 16, 440, 48, idHint, instance)
-	d.status = d.child("EDIT", "", wsVScroll|esMultiline|esReadonly|esAutovscroll, 16, 72, 440, 120, idStatus, instance)
-	limit(d.status)
-	d.main = []uintptr{
-		d.child("BUTTON", "Вжух и прокси", 0, 16, 210, 440, 40, idApply, instance),
-		d.child("BUTTON", "Удалить настройки прокси", 0, 16, 258, 440, 40, idRemove, instance),
-		d.child("BUTTON", "Настройки", 0, 16, 306, 440, 40, idSettings, instance),
-		d.child("BUTTON", "Логи", 0, 16, 354, 440, 40, idLogs, instance),
+	for _, c := range controls() {
+		hwnd := d.child(c, instance)
+		d.byID[c.ID] = hwnd
+		switch c.ID {
+		case idHint:
+			d.hint = hwnd
+		case idStatus:
+			d.status = hwnd
+			limit(hwnd)
+		case idLogBox:
+			d.logBox = hwnd
+			limit(hwnd)
+		}
+		if c.Kind == "button" || c.Input {
+			d.interactive = append(d.interactive, hwnd)
+		}
+		if c.Input {
+			subclassInput(hwnd)
+			if c.Password {
+				procSendMessageW.Call(hwnd, emSetPassword, uintptr('*'), 0)
+			}
+		}
 	}
-	d.fields = []uintptr{
-		d.child("STATIC", "ip", 0, 16, 210, 80, 22, 0, instance),
-		d.child("EDIT", "", esAutohscroll, 110, 206, 346, 28, idIP, instance),
-		d.child("STATIC", "user", 0, 16, 248, 80, 22, 0, instance),
-		d.child("EDIT", "", esAutohscroll, 110, 244, 346, 28, idUser, instance),
-		d.child("STATIC", "password", 0, 16, 286, 80, 22, 0, instance),
-		d.child("EDIT", "", esAutohscroll|esPassword, 110, 282, 346, 28, idPass, instance),
-		d.child("BUTTON", "Сохранить", 0, 16, 330, 210, 40, idSave, instance),
-	}
-	d.confirm = []uintptr{
-		d.child("BUTTON", "Да", 0, 16, 210, 440, 40, idYes, instance),
-		d.child("BUTTON", "Да, и на vps", 0, 16, 258, 440, 40, idYesVPS, instance),
-	}
-	d.logBox = d.child("EDIT", "", wsVScroll|esMultiline|esReadonly|esAutovscroll, 16, 206, 440, 250, idLogBox, instance)
-	limit(d.logBox)
-	d.back = d.child("BUTTON", "Назад", 0, 16, 470, 440, 40, idBack, instance)
-	d.buttons = append(append(append([]uintptr{}, d.main...), d.fields...), d.confirm...)
-	d.buttons = append(d.buttons, d.back)
 }
 
-func (d *desk) child(class, text string, extra uintptr, x, y, w, h int, id int, instance uintptr) uintptr {
-	style := uintptr(wsChild | wsVisible | wsTabStop)
+func (d *desk) child(c control, instance uintptr) uintptr {
+	class := "STATIC"
+	extra := uintptr(0)
+	ex := uintptr(0)
+	switch c.Kind {
+	case "button":
+		class = "BUTTON"
+	case "edit":
+		class = "EDIT"
+		extra |= esAutohscroll
+		ex = wsExClientEdge
+		if c.Password {
+			extra |= esPassword
+		}
+		if c.Multi {
+			extra |= wsVScroll | esMultiline | esAutovscroll
+		}
+		if c.ReadOnly {
+			extra |= esReadonly
+		}
+	case "label":
+		extra |= ssNotify
+	}
+	style := uintptr(wsChild | wsClipSiblings)
+	if c.TabStop {
+		style |= wsTabStop
+	}
+	if c.CreateVisible {
+		style |= wsVisible
+	}
 	style |= extra
+	cls := utf16(class)
+	txt := utf16(c.Text)
 	hwnd, _, _ := procCreateWindowExW.Call(
-		0,
-		uintptr(unsafe.Pointer(utf16(class))),
-		uintptr(unsafe.Pointer(utf16(text))),
+		ex,
+		uintptr(unsafe.Pointer(cls)),
+		uintptr(unsafe.Pointer(txt)),
 		style,
-		uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		uintptr(c.X), uintptr(c.Y), uintptr(c.W), uintptr(c.H),
 		d.hwnd,
-		uintptr(id),
+		uintptr(c.ID),
 		instance,
 		0,
 	)
+	runtime.KeepAlive(cls)
+	runtime.KeepAlive(txt)
 	if d.font != 0 && hwnd != 0 {
 		procSendMessageW.Call(hwnd, wmSetFont, d.font, 1)
 	}
@@ -222,25 +281,26 @@ func (d *desk) child(class, text string, extra uintptr, x, y, w, h int, id int, 
 
 func (d *desk) show(screen string) {
 	d.screen = screen
-	for _, hwnd := range append(append([]uintptr{}, d.main...), d.fields...) {
-		show(hwnd, false)
+	for _, c := range stack(screen) {
+		hwnd := d.byID[c.ID]
+		if c.on(screen) {
+			continue
+		}
+		procEnableWindow.Call(hwnd, 0)
+		place(hwnd, false, false, false)
 	}
-	for _, hwnd := range d.confirm {
-		show(hwnd, false)
+	for _, c := range stack(screen) {
+		if !c.on(screen) {
+			continue
+		}
+		hwnd := d.byID[c.ID]
+		procEnableWindow.Call(hwnd, 1)
+		place(hwnd, true, true, c.Input)
 	}
-	show(d.logBox, false)
-	show(d.back, false)
 	switch screen {
 	case "main":
-		for _, hwnd := range d.main {
-			show(hwnd, true)
-		}
 		setText(d.hint, "Cursor ходит в облако через 127.0.0.1:18081. Остальной трафик Windows не трогается.")
 	case "settings":
-		for _, hwnd := range d.fields {
-			show(hwnd, true)
-		}
-		show(d.back, true)
 		creds, err := loadSettings(d.engine)
 		if err != nil {
 			setText(d.status, err.Error())
@@ -249,18 +309,33 @@ func (d *desk) show(screen string) {
 		setByID(idUser, creds.User)
 		setByID(idPass, creds.Password)
 		setText(d.hint, "Сохранить пишет блок в ~\\.cursor-fast-proxy\\settings.env и не ставит системный прокси.")
+		focusAtEnd(d.byID[idIP])
 	case "confirm":
-		for _, hwnd := range d.confirm {
-			show(hwnd, true)
-		}
-		show(d.back, true)
 		setText(d.hint, "«Да» убирает локальный прокси. «Да, и на vps» ещё удаляет сервис sing-box-cursor.")
 	case "logs":
-		show(d.logBox, true)
-		show(d.back, true)
 		setText(d.logBox, readLog(d.engine))
 		setText(d.hint, "В журнале ip, user и password заменены именами переменных.")
 	}
+}
+
+func place(hwnd uintptr, top, visible, frame bool) {
+	if hwnd == 0 {
+		return
+	}
+	insert := uintptr(1) // HWND_BOTTOM
+	flags := uintptr(swpNoMove | swpNoSize | swpNoActivate)
+	if top {
+		insert = 0 // HWND_TOP
+	}
+	if visible {
+		flags |= swpShowWindow
+	} else {
+		flags |= swpHideWindow
+	}
+	if frame {
+		flags |= swpFrameChanged
+	}
+	procSetWindowPos.Call(hwnd, insert, 0, 0, 0, 0, flags)
 }
 
 func (d *desk) onCommand(id uintptr) {
@@ -275,6 +350,12 @@ func (d *desk) onCommand(id uintptr) {
 		d.show("logs")
 	case idBack:
 		d.show("main")
+	case idIPLabel:
+		focusAtEnd(d.byID[idIP])
+	case idUserLabel:
+		focusAtEnd(d.byID[idUser])
+	case idPassLabel:
+		focusAtEnd(d.byID[idPass])
 	case idSave:
 		err := saveSettings(d.engine, textByID(idIP), textByID(idUser), textByID(idPass))
 		if err != nil {
@@ -308,7 +389,7 @@ func (d *desk) setEnabled(enabled bool) {
 	if enabled {
 		flag = 1
 	}
-	for _, hwnd := range d.buttons {
+	for _, hwnd := range d.interactive {
 		procEnableWindow.Call(hwnd, flag)
 	}
 }
@@ -341,6 +422,56 @@ func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	return ret
 }
 
+func inputProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
+	if msg == wmLButtonDown {
+		procSetFocus.Call(hwnd)
+	}
+	if origInputProc == 0 {
+		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return ret
+	}
+	ret, _, _ := procCallWindowProcW.Call(origInputProc, hwnd, uintptr(msg), wParam, lParam)
+	return ret
+}
+
+func subclassInput(hwnd uintptr) {
+	prev, _, _ := procSetWindowLongPtrW.Call(hwnd, ^uintptr(3), inputCallback)
+	if prev != 0 && prev != inputCallback && origInputProc == 0 {
+		origInputProc = prev
+	}
+}
+
+func focusAtEnd(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	procSetFocus.Call(hwnd)
+	n, _, _ := procGetWindowTextLenW.Call(hwnd)
+	procSendMessageW.Call(hwnd, emSetSel, n, n)
+}
+
+func dispatch(msg *message) {
+	if state != nil {
+		handled, _, _ := procIsDialogMessageW.Call(state.hwnd, uintptr(unsafe.Pointer(msg)))
+		if handled != 0 {
+			return
+		}
+	}
+	procTranslateMessage.Call(uintptr(unsafe.Pointer(msg)))
+	procDispatchMessageW.Call(uintptr(unsafe.Pointer(msg)))
+}
+
+func pump(limit int) {
+	var msg message
+	for i := 0; i < limit; i++ {
+		r, _, _ := procPeekMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 1)
+		if r == 0 {
+			return
+		}
+		dispatch(&msg)
+	}
+}
+
 func postStatus(text string, enable bool) {
 	statusMu.Lock()
 	pendingStatus = text
@@ -355,7 +486,9 @@ func setText(hwnd uintptr, text string) {
 	if hwnd == 0 {
 		return
 	}
-	procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(utf16(text))))
+	ptr := utf16(text)
+	procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(ptr)))
+	runtime.KeepAlive(ptr)
 }
 
 func setByID(id int, text string) {
@@ -367,8 +500,10 @@ func textByID(id int) string {
 }
 
 func find(id int) uintptr {
-	hwnd, _, _ := user32.NewProc("GetDlgItem").Call(state.hwnd, uintptr(id))
-	return hwnd
+	if state == nil {
+		return 0
+	}
+	return state.byID[id]
 }
 
 func getText(hwnd uintptr) string {
@@ -381,28 +516,22 @@ func getText(hwnd uintptr) string {
 	return windows.UTF16ToString(buf)
 }
 
-func show(hwnd uintptr, visible bool) {
-	cmd := uintptr(swHide)
-	if visible {
-		cmd = swShow
-	}
-	procShowWindow.Call(hwnd, cmd)
-}
-
 func limit(hwnd uintptr) {
 	procSendMessageW.Call(hwnd, emSetLimitText, 1<<20, 0)
 }
 
-func makeFont(name string, height int) uintptr {
+func makeFont(name string, height int32) uintptr {
+	namePtr := utf16(name)
 	font, _, _ := procCreateFontW.Call(
-		uintptr(height),
+		uintptr(uint32(height)),
 		0, 0, 0,
 		400,
 		0, 0, 0,
 		1,
 		0, 0, 5, 0,
-		uintptr(unsafe.Pointer(utf16(name))),
+		uintptr(unsafe.Pointer(namePtr)),
 	)
+	runtime.KeepAlive(namePtr)
 	return font
 }
 

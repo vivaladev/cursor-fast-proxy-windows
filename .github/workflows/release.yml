@@ -49,6 +49,6 @@ jobs:
             - `Cursor-fast-proxy-${{ steps.ver.outputs.version }}-windows-amd64.zip` — обычные ПК.
             - `Cursor-fast-proxy-${{ steps.ver.outputs.version }}-windows-arm64.zip` — Windows on ARM.
 
-            Распакуй архив и запусти `CursorFastProxy.exe`. В программе нет личных адресов, логинов и паролей. После включения или удаления прокси полностью перезапусти Cursor.
+            Распакуй архив и запусти `CursorFastProxy.exe`. В программе нет личных адресов, логинов и паролей. В настройках курсор ставится в поля ip, user и password. После включения или удаления прокси полностью перезапусти Cursor.
 
             SmartScreen может спросить подтверждение: сборка без сертификата издателя.
