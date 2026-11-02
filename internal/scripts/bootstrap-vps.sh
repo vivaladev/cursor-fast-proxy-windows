@@ -14,7 +14,8 @@ log() { printf '%s\n' "$*" >&2; }
 
 sq() {
   local value=$1
-  value=${value//\'/\'\\\'\'}\n  printf "'%s'" "$value"
+  value=${value//\'/\'\\\'\'}
+  printf "'%s'" "$value"
 }
 
 json_escape() {
