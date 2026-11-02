@@ -1,0 +1,54 @@
+name: Windows release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - name: Test
+        run: go test ./...
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($arch in @("amd64", "arm64")) {
+            $env:GOOS = "windows"
+            $env:GOARCH = $arch
+            $env:CGO_ENABLED = "0"
+            go build -ldflags "-H windowsgui" -o "dist/CursorFastProxy-$arch.exe" ./cmd/cursor-fast-proxy
+            Compress-Archive -Path "dist/CursorFastProxy-$arch.exe" -DestinationPath "dist/Cursor-fast-proxy-$version-windows-$arch.zip" -Force
+          }
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}-windows
+          name: ${{ steps.ver.outputs.version }} Windows
+          files: dist/*.zip
+          generate_release_notes: false
+          body: |
+            Сборка для 64-битной Windows 10 и 11.
+
+            - `Cursor-fast-proxy-${{ steps.ver.outputs.version }}-windows-amd64.zip` — обычные ПК.
+            - `Cursor-fast-proxy-${{ steps.ver.outputs.version }}-windows-arm64.zip` — Windows on ARM.
+
+            Распакуй архив и запусти `CursorFastProxy.exe`. В программе нет личных адресов, логинов и паролей. После включения или удаления прокси полностью перезапусти Cursor.
+
+            SmartScreen может спросить подтверждение: сборка без сертификата издателя.
