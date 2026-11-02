@@ -2,14 +2,13 @@ package settings
 
 import (
 	"fmt"
-	"net"
 	"strings"
 	"unicode"
 )
 
 const (
-	begin = "# >>> cursor-fast-proxy >>>"
-	end   = "# <<< cursor-fast-proxy <<<"
+	Begin = "# >>> cursor-fast-proxy >>>"
+	End   = "# <<< cursor-fast-proxy <<<"
 )
 
 type Credentials struct {
@@ -18,96 +17,130 @@ type Credentials struct {
 	Password string
 }
 
+func (c Credentials) Secrets() map[string]string {
+	return map[string]string{
+		"CURSOR_FAST_PROXY_IP":   c.IP,
+		"CURSOR_FAST_PROXY_USER": c.User,
+		"CURSOR_FAST_PROXY_PASS": c.Password,
+	}
+}
+
 type Error struct{ Message string }
 
 func (e Error) Error() string { return e.Message }
 
-func Validate(creds Credentials) error {
-	if strings.TrimSpace(creds.IP) == "" || strings.TrimSpace(creds.User) == "" || creds.Password == "" {
-		return Error{Message: "заполни ip, user и password"}
+func Validate(c Credentials) error {
+	if err := require(c.IP, "ip", false); err != nil {
+		return err
 	}
-	if strings.ContainsAny(creds.IP, " \t\r\n") || net.ParseIP(creds.IP) == nil {
-		return Error{Message: "ip должен быть адресом"}
+	if err := require(c.User, "user", false); err != nil {
+		return err
 	}
-	if strings.ContainsAny(creds.User, " \t\r\n") {
-		return Error{Message: "user без пробелов"}
+	return require(c.Password, "password", true)
+}
+
+func require(value, name string, allowSpaces bool) error {
+	if value == "" || strings.Contains(value, "\n") || strings.Contains(value, "\r") {
+		return Error{Message: "пустое поле " + name}
 	}
-	if strings.ContainsAny(creds.Password, "\r\n") {
-		return Error{Message: "password без перевода строки"}
+	if !allowSpaces {
+		for _, r := range value {
+			if unicode.IsSpace(r) {
+				return Error{Message: "пустое поле " + name}
+			}
+		}
 	}
 	return nil
 }
 
-func Write(creds Credentials) (string, error) {
-	if err := Validate(creds); err != nil {
+func Write(c Credentials) (string, error) {
+	if err := Validate(c); err != nil {
 		return "", err
 	}
-	return begin + "\n" +
-		"CURSOR_FAST_PROXY_IP=" + shellQuote(creds.IP) + "\n" +
-		"CURSOR_FAST_PROXY_USER=" + shellQuote(creds.User) + "\n" +
-		"CURSOR_FAST_PROXY_PASS=" + shellQuote(creds.Password) + "\n" +
-		end + "\n", nil
+	lines := []string{
+		Begin,
+		"export CURSOR_FAST_PROXY_IP=" + shellQuote(c.IP),
+		"export CURSOR_FAST_PROXY_USER=" + shellQuote(c.User),
+		"export CURSOR_FAST_PROXY_PASS=" + shellQuote(c.Password),
+		End,
+	}
+	return strings.Join(lines, "\n") + "\n", nil
 }
 
-func Read(text string) (Credentials, bool, error) {
-	start := strings.Index(text, begin)
+func Read(contents string) (Credentials, bool, error) {
+	lines := splitLines(contents)
+	start := indexOf(lines, Begin)
+	stop := indexOf(lines, End)
 	if start < 0 {
+		if stop >= 0 {
+			return Credentials{}, false, Error{Message: "блок cursor-fast-proxy в настройках оборван"}
+		}
 		return Credentials{}, false, nil
 	}
-	rest := text[start+len(begin):]
-	stop := strings.Index(rest, end)
-	if stop < 0 {
-		return Credentials{}, false, Error{Message: "блок cursor-fast-proxy не закрыт"}
+	if stop < 0 || stop <= start {
+		return Credentials{}, false, Error{Message: "блок cursor-fast-proxy в настройках оборван"}
 	}
-	values := map[string]string{}
-	for _, line := range strings.Split(rest[:stop], "\n") {
-		line = strings.TrimRightFunc(line, unicode.IsSpace)
-		line = strings.TrimLeftFunc(line, unicode.IsSpace)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(line[len("export "):])
-		}
-		name, raw, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		value, err := unescape(strings.TrimSpace(raw))
-		if err != nil {
-			return Credentials{}, false, err
-		}
-		values[name] = value
+	body := lines[start+1 : stop]
+	ip, okIP := value(body, "CURSOR_FAST_PROXY_IP")
+	user, okUser := value(body, "CURSOR_FAST_PROXY_USER")
+	pass, okPass := value(body, "CURSOR_FAST_PROXY_PASS")
+	if !okIP || !okUser || !okPass {
+		return Credentials{}, false, nil
 	}
-	creds := Credentials{
-		IP:       values["CURSOR_FAST_PROXY_IP"],
-		User:     values["CURSOR_FAST_PROXY_USER"],
-		Password: values["CURSOR_FAST_PROXY_PASS"],
-	}
-	if err := Validate(creds); err != nil {
-		return Credentials{}, false, err
-	}
-	return creds, true, nil
+	return Credentials{IP: ip, User: user, Password: pass}, true, nil
 }
 
 func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-func unescape(raw string) (string, error) {
-	if len(raw) >= 2 && raw[0] == '\'' && raw[len(raw)-1] == '\'' {
-		body := raw[1 : len(raw)-1]
-		return strings.ReplaceAll(body, `'"'"'`, "'"), nil
+func value(body []string, name string) (string, bool) {
+	prefix := "export " + name + "="
+	for _, line := range body {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, prefix) {
+			raw := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+			text, ok := unescape(raw)
+			if !ok {
+				return "", false
+			}
+			return text, true
+		}
 	}
-	if strings.ContainsAny(raw, " \t") {
-		return "", Error{Message: "значение без кавычек содержит пробел"}
+	return "", false
+}
+
+func unescape(raw string) (string, bool) {
+	if len(raw) < 2 || raw[0] != '\'' || raw[len(raw)-1] != '\'' {
+		return "", false
 	}
-	return raw, nil
+	inner := raw[1 : len(raw)-1]
+	return strings.ReplaceAll(inner, `'\''`, "'"), true
+}
+
+func splitLines(contents string) []string {
+	text := contents
+	if strings.HasSuffix(text, "\n") {
+		text = text[:len(text)-1]
+	}
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
+func indexOf(lines []string, target string) int {
+	for i, line := range lines {
+		if line == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func FormatReadError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s", err)
+	return fmt.Sprint(err)
 }
