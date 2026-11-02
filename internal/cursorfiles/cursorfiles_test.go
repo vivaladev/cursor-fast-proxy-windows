@@ -43,7 +43,7 @@ func TestApplyArgvAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(applied, canon.ProxyURL) || !strings.Contains(applied, "172.31.*") {
+	if !strings.Contains(applied, canon.ProxyURL) || strings.Contains(applied, "proxy-bypass-list") {
 		t.Fatalf("argv %s", applied)
 	}
 	removed, err := RemoveArgv(applied + "\n")
@@ -55,15 +55,19 @@ func TestApplyArgvAndRemove(t *testing.T) {
 	}
 }
 
-func TestNoProxyDoesNotIncludeDigitalChiefGitLab(t *testing.T) {
-	applied, err := ApplySettings("{}")
+func TestApplyDropsExistingBypass(t *testing.T) {
+	settings, err := ApplySettings("{\n  \"http.noProxy\": \"localhost,.example\"\n}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(applied, "digitalchief") {
-		t.Fatal("gitlab.digitalchief.tech не должен попадать в обход без отдельного решения")
+	if strings.Contains(settings, "noProxy") || strings.Contains(settings, ".example") {
+		t.Fatalf("обход остался: %s", settings)
 	}
-	if !strings.Contains(applied, ".platops.ru") || !strings.Contains(applied, ".alfabank.ru") {
-		t.Fatalf("нет рабочих суффиксов: %s", applied)
+	argv, err := ApplyArgv("{\n  \"proxy-bypass-list\": \"<local>\"\n}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(argv, "bypass") || strings.Contains(argv, "<local>") {
+		t.Fatalf("обход argv остался: %s", argv)
 	}
 }

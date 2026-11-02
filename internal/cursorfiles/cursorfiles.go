@@ -22,13 +22,13 @@ func ApplySettings(source string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsontext.Set(text, "http.noProxy", jsontext.String(canon.NoProxy))
+	return jsontext.Remove(text, "http.noProxy")
 }
 
 func RemoveSettings(source string) (string, error) {
 	text := source
 	var err error
-	for _, key := range canon.SettingsKeys {
+	for _, key := range append(canon.SettingsKeys, "http.noProxy") {
 		text, err = jsontext.Remove(text, key)
 		if err != nil {
 			return "", err
@@ -44,13 +44,13 @@ func ApplyArgv(source string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return jsontext.Set(text, "proxy-bypass-list", jsontext.String(canon.BypassList))
+	return jsontext.Remove(text, "proxy-bypass-list")
 }
 
 func RemoveArgv(source string) (string, error) {
 	text := source
 	var err error
-	for _, key := range canon.ArgvKeys {
+	for _, key := range append(canon.ArgvKeys, "proxy-bypass-list") {
 		text, err = jsontext.Remove(text, key)
 		if err != nil {
 			return "", err
