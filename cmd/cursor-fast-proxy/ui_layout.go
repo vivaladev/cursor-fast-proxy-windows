@@ -107,16 +107,64 @@ func stack(screen string) []control {
 	return append(out, shown...)
 }
 
+// parkedX is where a control lives while its screen is closed. Hiding it is
+// not enough on Windows 10: a hidden sibling that still occupies the box can
+// take the click, so the caret never appears in ip/user/password.
+const parkedX = -20000
+
+func (c control) placeOn(screen string) control {
+	if !c.on(screen) {
+		c.X = parkedX
+	}
+	return c
+}
+
 func hitControl(screen string, x, y int) (control, bool) {
 	var found control
 	ok := false
 	for _, c := range stack(screen) {
-		if c.contains(x, y) {
+		if c.placeOn(screen).contains(x, y) {
 			found = c
 			ok = true
 		}
 	}
 	return found, ok
+}
+
+// clickOnTextLine keeps a click inside the single-line text strip.
+// Windows 10 ignores a click in the rest of the box, so the caret stays put.
+func clickOnTextLine(clickX, clickY, lineY, lineH, clientH int) (x, y int) {
+	if clientH < 1 {
+		clientH = 1
+	}
+	if lineH < 1 {
+		lineH = 1
+	}
+	if lineY < 0 || lineY >= clientH {
+		lineY = 0
+	}
+	if clickY >= lineY && clickY < lineY+lineH && clickY < clientH {
+		return clickX, clickY
+	}
+	y = lineY + lineH/2
+	if y < 0 {
+		y = 0
+	}
+	if y >= clientH {
+		y = clientH - 1
+	}
+	return clickX, y
+}
+
+// dialogCanTake reports messages the dialog loop may consume.
+// Mouse clicks must reach the edit control, or the caret never moves.
+func dialogCanTake(msg uint32) bool {
+	switch msg {
+	case 0x0200, 0x0201, 0x0202, 0x0203, 0x0204, 0x0205, 0x0207, 0x0208, 0x020A:
+		return false
+	default:
+		return true
+	}
 }
 
 func inputFitsCaret(c control) bool {
