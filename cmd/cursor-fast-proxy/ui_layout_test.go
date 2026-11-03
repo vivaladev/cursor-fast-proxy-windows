@@ -42,6 +42,52 @@ func TestSettingsClickLandsInInputs(t *testing.T) {
 	}
 }
 
+func TestParkedControlsLeaveTheInputs(t *testing.T) {
+	for _, id := range []int{idIP, idUser, idPass} {
+		field, _ := controlByID(id)
+		cx, cy := field.X+field.W/2, field.Y+field.H/2
+		for _, c := range controls() {
+			if c.ID == id {
+				continue
+			}
+			if c.placeOn("settings").contains(cx, cy) {
+				t.Fatalf("на настройках %s перекрывает %s", c.Name, field.Name)
+			}
+		}
+		if parked := field.placeOn("main"); parked.X != parkedX {
+			t.Fatalf("%s на главном экране осталось на x=%d", field.Name, parked.X)
+		}
+		logBox, _ := controlByID(idLogBox)
+		if logBox.placeOn("settings").contains(cx, cy) {
+			t.Fatalf("журнал остался поверх %s", field.Name)
+		}
+	}
+}
+
+func TestClickBelowTheTextLineStillPlacesCaret(t *testing.T) {
+	x, y := clickOnTextLine(80, 34, 2, 16, 36)
+	if x != 80 || y < 2 || y >= 18 {
+		t.Fatalf("клик ниже строки ушёл в %d,%d", x, y)
+	}
+	x, y = clickOnTextLine(10, 8, 2, 16, 36)
+	if x != 10 || y != 8 {
+		t.Fatalf("клик по строке сдвинулся в %d,%d", x, y)
+	}
+	x, y = clickOnTextLine(4, 0, 40, 16, 36)
+	if x != 4 || y < 0 || y >= 36 {
+		t.Fatalf("строка вне поля ушла в %d,%d", x, y)
+	}
+}
+
+func TestMouseClicksAreNotDialogKeys(t *testing.T) {
+	if dialogCanTake(0x0201) || dialogCanTake(0x0202) || dialogCanTake(0x0200) {
+		t.Fatal("клик мыши уходит в диалоговый цикл и не ставит курсор")
+	}
+	if !dialogCanTake(0x0100) {
+		t.Fatal("клавиатура больше не идёт в диалоговый цикл")
+	}
+}
+
 func TestSharedRectanglesFollowTheOpenScreen(t *testing.T) {
 	pass, _ := controlByID(idPass)
 	button, _ := controlByID(idSettings)

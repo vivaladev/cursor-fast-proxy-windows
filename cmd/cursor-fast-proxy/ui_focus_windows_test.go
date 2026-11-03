@@ -4,6 +4,7 @@ package main
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -62,17 +63,33 @@ func TestSettingsFieldsAcceptCaret(t *testing.T) {
 		if focus := focused(); focus != hwnd {
 			t.Fatalf("после клика фокус у %s, ждали %s", controlName(focus), field.Name)
 		}
-		if !caretVisible() {
-			t.Fatalf("в %s нет курсора", field.Name)
+		if owner, height := caretOwner(); owner != hwnd || height < 1 {
+			t.Fatalf("в %s курсор у %s высотой %d", field.Name, controlName(owner), height)
 		}
-		pos, _, _ := procSendMessageW.Call(hwnd, emCharFromPos, 0, packPoint(8, field.H/2))
-		if uint16(pos) == 0xFFFF {
-			t.Fatalf("%s не принимает позицию курсора", field.Name)
+		setText(hwnd, "abcdef")
+		end := uintptr(len("abcdef"))
+		procSendMessageW.Call(hwnd, emSetSel, end, end)
+		click(hwnd, 4, field.H-3)
+		if got := selectionStart(hwnd); got >= len("abcdef") {
+			t.Fatalf("клик в начало %s оставил курсор на %d", field.Name, got)
+		}
+		procSendMessageW.Call(hwnd, emSetSel, 0, 0)
+		click(hwnd, field.W-8, field.H-3)
+		if got := selectionStart(hwnd); got == 0 {
+			t.Fatalf("клик в конец %s не сдвинул курсор", field.Name)
 		}
 		procSendMessageW.Call(hwnd, wmChar, uintptr('Z'), 0)
-		if getText(hwnd) != "Z" {
+		if !strings.Contains(getText(hwnd), "Z") {
 			t.Fatalf("%s не приняло ввод, текст %q", field.Name, getText(hwnd))
 		}
+	}
+	buttonX, _, _, _ := windowInParent(desk.hwnd, desk.byID[idSettings])
+	if buttonX >= 0 {
+		t.Fatalf("кнопка «Настройки» осталась на экране настроек, x=%d", buttonX)
+	}
+	logX, _, _, _ := windowInParent(desk.hwnd, desk.logBox)
+	if logX >= 0 {
+		t.Fatalf("журнал остался на экране настроек, x=%d", logX)
 	}
 
 	label, _ := controlByID(idUserLabel)
@@ -97,15 +114,38 @@ func visible(hwnd uintptr) bool {
 	return r != 0
 }
 
-func caretVisible() bool {
-	var pt point
-	ok, _, _ := user32.NewProc("GetCaretPos").Call(uintptr(unsafe.Pointer(&pt)))
-	runtime.KeepAlive(&pt)
-	return ok != 0
+type guiThreadInfo struct {
+	CbSize                           uint32
+	Flags                            uint32
+	HwndActive                       uintptr
+	HwndFocus                        uintptr
+	HwndCapture                      uintptr
+	HwndMenuOwner                    uintptr
+	HwndMoveSize                     uintptr
+	HwndCaret                        uintptr
+	RcLeft, RcTop, RcRight, RcBottom int32
+}
+
+func caretOwner() (uintptr, int) {
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	ok, _, _ := user32.NewProc("GetGUIThreadInfo").Call(0, uintptr(unsafe.Pointer(&info)))
+	runtime.KeepAlive(&info)
+	if ok == 0 {
+		return 0, 0
+	}
+	return info.HwndCaret, int(info.RcBottom - info.RcTop)
+}
+
+func selectionStart(hwnd uintptr) int {
+	var start, end uint32
+	procSendMessageW.Call(hwnd, emGetSel, uintptr(unsafe.Pointer(&start)), uintptr(unsafe.Pointer(&end)))
+	runtime.KeepAlive(&start)
+	runtime.KeepAlive(&end)
+	return int(start)
 }
 
 func click(hwnd uintptr, x, y int) {
-	pt := packPoint(x, y)
+	pt := packMouse(int32(x), int32(y))
 	procPostMessageW.Call(hwnd, wmLButtonDown, 1, pt)
 	procPostMessageW.Call(hwnd, wmLButtonUp, 0, pt)
 	pump(40)
