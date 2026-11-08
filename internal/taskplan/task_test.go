@@ -3,6 +3,7 @@ package taskplan
 import (
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestXMLStartsAtLogonAndRestarts(t *testing.T) {
@@ -25,6 +26,20 @@ func TestXMLStartsAtLogonAndRestarts(t *testing.T) {
 	if strings.Contains(xml, "HighestAvailable") || strings.Contains(xml, "tun") {
 		t.Fatal("задача повысила права или упомянула tun")
 	}
+	if !strings.HasPrefix(xml, `<?xml version="1.0" encoding="UTF-16"?>`) || strings.Contains(xml, "UTF-8") {
+		t.Fatalf("объявление кодировки %q", xml[:80])
+	}
+	raw := Encode(xml)
+	if len(raw) < 4 || raw[0] != 0xFF || raw[1] != 0xFE {
+		t.Fatalf("BOM %x", raw[:2])
+	}
+	units := make([]uint16, (len(raw)-2)/2)
+	for i := range units {
+		units[i] = uint16(raw[2+i*2]) | uint16(raw[3+i*2])<<8
+	}
+	if string(utf16.Decode(units)) != xml {
+		t.Fatal("UTF-16 LE не совпал с текстом задачи")
+	}
 }
 
 func TestRunnerCmdQuotesPaths(t *testing.T) {
@@ -39,6 +54,9 @@ func TestRunnerCmdQuotesPaths(t *testing.T) {
 	}
 	if !strings.Contains(got, `"C:\Program Files\sing-box.exe" run -c "C:\Users\me\cursor-egress\sing-box-client.json"`) {
 		t.Fatalf("%s", got)
+	}
+	if !strings.Contains(got, "\r\n") || strings.Contains(strings.ReplaceAll(got, "\r\n", ""), "\n") {
+		t.Fatal("cmd потерял CRLF")
 	}
 }
 

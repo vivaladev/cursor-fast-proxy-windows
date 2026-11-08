@@ -3,6 +3,7 @@ package taskplan
 import (
 	"fmt"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/canon"
 )
@@ -11,7 +12,7 @@ func XML(command string) (string, error) {
 	if err := safePath(command); err != nil {
 		return "", err
 	}
-	return `<?xml version="1.0" encoding="UTF-8"?>
+	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Cursor fast proxy sing-box</Description>
@@ -49,6 +50,21 @@ func XML(command string) (string, error) {
   </Actions>
 </Task>
 `, nil
+}
+
+// Encode is the task.xml schtasks accepts on a Russian Windows: UTF-16 LE with BOM.
+// UTF-8 without a BOM is read as the OEM code page, and the encoding
+// declaration then fails at column 40.
+func Encode(text string) []byte {
+	units := utf16.Encode([]rune(text))
+	out := make([]byte, 2+len(units)*2)
+	out[0] = 0xFF
+	out[1] = 0xFE
+	for i, unit := range units {
+		out[2+i*2] = byte(unit)
+		out[3+i*2] = byte(unit >> 8)
+	}
+	return out
 }
 
 func RunnerCmd(singBox, config, logPath, errPath string) (string, error) {

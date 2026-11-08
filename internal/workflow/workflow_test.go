@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -138,6 +139,20 @@ func TestApplyHappyPathMasksSecrets(t *testing.T) {
 	}
 	if _, err := os.Stat(eng.Paths.SingBox()); err != nil {
 		t.Fatal(err)
+	}
+	taskXML, err := os.ReadFile(eng.Paths.TaskXML())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(taskXML) < 2 || taskXML[0] != 0xFF || taskXML[1] != 0xFE {
+		t.Fatalf("task.xml не UTF-16 LE: %x", taskXML[:min(4, len(taskXML))])
+	}
+	cmd, err := os.ReadFile(eng.Paths.RunnerCmd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(cmd, []byte("\r\n")) {
+		t.Fatal("run-singbox.cmd без CRLF")
 	}
 }
 

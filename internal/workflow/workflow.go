@@ -185,7 +185,7 @@ func (e *Engine) installDaemon(ctx context.Context, creds settings.Credentials) 
 	if err := writeFile(e.Paths.RunnerCmd(), []byte(runner), 0o700); err != nil {
 		return e.fail(creds, "демон", err)
 	}
-	if err := writeFile(e.Paths.TaskXML(), []byte(xml), 0o600); err != nil {
+	if err := writeFile(e.Paths.TaskXML(), taskplan.Encode(xml), 0o600); err != nil {
 		return e.fail(creds, "демон", err)
 	}
 	e.command(creds, "schtasks /Create /TN "+taskplan.TaskName())
