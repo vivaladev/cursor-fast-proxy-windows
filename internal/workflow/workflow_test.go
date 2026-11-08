@@ -48,6 +48,22 @@ func writeSettings(t *testing.T, eng *Engine) {
 	}
 }
 
+func TestSSHSendsLFToBash(t *testing.T) {
+	eng, _ := testEngine(t)
+	var got string
+	eng.SSH = func(ctx context.Context, creds settings.Credentials, script string) (string, error) {
+		got = script
+		return "", nil
+	}
+	_, err := eng.ssh(context.Background(), settings.Credentials{}, "set -euo pipefail\r\ntrue || true\r\nfi\r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "\r") || got != "set -euo pipefail\ntrue || true\nfi\n" {
+		t.Fatalf("bash получил %q", got)
+	}
+}
+
 func TestApplyStopsBeforeDownloadWhenSettingsMissing(t *testing.T) {
 	eng, _ := testEngine(t)
 	called := false

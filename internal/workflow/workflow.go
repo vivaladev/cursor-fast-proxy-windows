@@ -14,6 +14,7 @@ import (
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/listen"
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/logx"
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/procenv"
+	"github.com/vivaladev/cursor-fast-proxy-windows/internal/scripts"
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/settings"
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/singboxcfg"
 	"github.com/vivaladev/cursor-fast-proxy-windows/internal/sshrun"
@@ -253,6 +254,7 @@ func (e *Engine) waitListen(ctx context.Context, creds settings.Credentials) err
 }
 
 func (e *Engine) ssh(ctx context.Context, creds settings.Credentials, script string) (string, error) {
+	script = scripts.Unix(script)
 	if e.SSH != nil {
 		return e.SSH(ctx, creds, script)
 	}
@@ -327,7 +329,7 @@ func writeFile(path string, data []byte, mode os.FileMode) error {
 }
 
 func parent(path string) string {
-	i := strings.LastIndexAny(path, `/\\`)
+	i := strings.LastIndexAny(path, `/\`)
 	if i <= 0 {
 		return "."
 	}
