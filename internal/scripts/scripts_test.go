@@ -51,6 +51,24 @@ func TestTeardownLeavesBinarySSHAndAmnezia(t *testing.T) {
 	}
 }
 
+func TestEmbeddedScriptsAreLF(t *testing.T) {
+	for name, script := range map[string]string{"bootstrap": Bootstrap, "teardown": Teardown} {
+		if strings.Contains(script, "\r") {
+			t.Fatalf("%s содержит CR", name)
+		}
+		if !strings.Contains(script, "set -euo pipefail\n") {
+			t.Fatalf("%s: после pipefail нет LF", name)
+		}
+	}
+}
+
+func TestUnixStripsCRLF(t *testing.T) {
+	got := Unix("set -euo pipefail\r\ntrue || true\r\nfi\r")
+	if strings.Contains(got, "\r") || got != "set -euo pipefail\ntrue || true\nfi\n" {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestScriptsAreNonEmpty(t *testing.T) {
 	if len(Bootstrap) < 500 || len(Teardown) < 100 {
 		t.Fatal("скрипты пустые")
